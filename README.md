@@ -18,6 +18,12 @@ The `DnsVpnService` then:
 4. If blocked, constructs a DNS response with `RCODE 3` (NXDOMAIN) and sends it back.
 5. If not blocked, forwards the query to an upstream DNS server (default: `8.8.8.8`) and relays the response.
 
+## ⚡ High-Performance Architecture
+Synthetic Spirit is optimized for speed and battery life:
+- **LruCache:** Instant resolution for frequent queries.
+- **Bloom Filter:** O(1) probabilistic filtering to minimize database hits.
+- **Room Persistence:** Indexed SQLite lookups for the 200k+ domain database.
+
 ## Development Setup
 1. Open this project in Android Studio.
 2. Build and run on an Android device (API 26+).

@@ -9,6 +9,7 @@ A simple Android app in Kotlin that blocks adult content using a local DNS sinkh
 - **Customizable Blocklist**: Add or remove domains in `app/src/main/assets/blocked_domains.txt`.
 - **User Whitelist**: Easily whitelist domains from the blocklist through the app's UI.
 - **Minimalist UI**: Simple toggle to start/stop the protection.
+- **Query Log**: View a real-time log of DNS queries and their block status.
 
 ## How it works
 The app uses the `VpnService` to create a virtual network interface. It sets the DNS server of the system to a local dummy address and adds a route to ensure only DNS traffic is captured by the VPN.
@@ -31,7 +32,7 @@ Synthetic Spirit is optimized for speed and battery life:
 
 ## Development Setup
 1. Open this project in Android Studio.
-2. Build and run on an Android device (API 26+).
+2. Build and run on an Android device (API 23+).
 3. Grant the VPN permission when prompted.
 
 ## FOSS (Free and Open Source Software)
@@ -52,8 +53,10 @@ Distributed under the MIT License. See `LICENSE` for more information.
 
 ## Project Structure
 - `app/src/main/kotlin/.../DnsVpnService.kt`: Core VPN and DNS logic.
-- `app/src/main/kotlin/.../MainActivity.kt`: User interface.
-- `app/src/main/kotlin/.../BlocklistManagerScreen.kt`: UI for managing the blocklist.
-- `app/src/main/kotlin/.../BlocklistManagerViewModel.kt`: ViewModel for the `BlocklistManagerScreen`.
-- `app/src/main/kotlin/.../WhitelistManager.kt`: Manages the user's whitelist using SharedPreferences.
+- `app/src/main/kotlin/.../MainActivity.kt`: Main UI and navigation.
+- `app/src/main/kotlin/.../BlocklistSettingsScreen.kt`: UI for managing the blocklist.
+- `app/src/main/kotlin/.../BlocklistViewModel.kt`: ViewModel for the `BlocklistSettingsScreen`.
+- `app/src/main/kotlin/.../QueryLogScreen.kt`: UI for displaying DNS query logs.
+- `app/src/main/kotlin/.../data/AppDatabase.kt`: Room database definition.
+- `app/src/main/kotlin/.../data/WhitelistedDomainDao.kt`: DAO for whitelisted domains.
 - `app/src/main/assets/blocked_domains.txt`: List of domains to block.

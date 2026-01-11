@@ -19,5 +19,5 @@ interface WhitelistedDomainDao {
     suspend fun delete(domain: WhitelistedDomain)
 
     @Query("SELECT EXISTS(SELECT 1 FROM user_whitelist WHERE domain = :domain)")
-    fun isWhitelisted(domain: String): Boolean
+    suspend fun isWhitelisted(domain: String): Boolean
 }

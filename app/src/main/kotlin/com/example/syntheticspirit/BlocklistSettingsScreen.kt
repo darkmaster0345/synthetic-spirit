@@ -7,7 +7,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Switch
@@ -22,7 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 
 @Composable
-fun BlocklistSettingsScreen(onBack: () -> Unit, viewModel: BlocklistViewModel = viewModel()) {
+fun BlocklistSettingsScreen(onBack: () -> Unit, onManageUrls: () -> Unit, viewModel: BlocklistViewModel = viewModel()) {
     val searchQuery by viewModel.searchQuery.collectAsState()
     val filteredDomains by viewModel.filteredDomains.collectAsState()
 
@@ -32,7 +33,7 @@ fun BlocklistSettingsScreen(onBack: () -> Unit, viewModel: BlocklistViewModel = 
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
             }
             TextField(
                 value = searchQuery,
@@ -42,6 +43,9 @@ fun BlocklistSettingsScreen(onBack: () -> Unit, viewModel: BlocklistViewModel = 
                     .padding(end = 8.dp),
                 label = { Text("Search Domains") }
             )
+        }
+        Button(onClick = onManageUrls) {
+            Text("Manage URLs")
         }
 
         LazyColumn {
@@ -56,7 +60,7 @@ fun BlocklistSettingsScreen(onBack: () -> Unit, viewModel: BlocklistViewModel = 
                     Switch(
                         checked = !item.isWhitelisted,
                         onCheckedChange = { 
-                            viewModel.onWhitelistClicked(item.domain, item.isWhitelisted)
+                            viewModel.onWhitelistClicked(item.domain, !item.isWhitelisted)
                         }
                     )
                 }

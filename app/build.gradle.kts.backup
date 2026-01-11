@@ -1,7 +1,6 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
 }
 
@@ -24,7 +23,7 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = true
+            isMinifyEnabled = true // Shrinks the app
             isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
@@ -45,20 +44,20 @@ android {
     buildFeatures {
         compose = true
     }
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.8"
+    }
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
-    lint {
-        disable.add("MutableCollectionMutableState")
-        disable.add("AutoboxingStateCreation")
-    }
 }
 
 dependencies {
+    // This constraint ensures Kotlin stays at 1.9.24 to match your Compose version
     constraints {
-        implementation("org.jetbrains.kotlin:kotlin-stdlib:2.0.21")
+        implementation("org.jetbrains.kotlin:kotlin-stdlib:1.9.24")
     }
 
     // Core Android and Lifecycle
@@ -91,6 +90,6 @@ dependencies {
     // Coroutines for high-performance background processing
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 
-    // Guava for Bloom Filters
+    // Guava for Bloom Filters (O(1) probabilistic lookup)
     implementation("com.google.guava:guava:33.0.0-android")
 }

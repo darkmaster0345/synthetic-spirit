@@ -16,6 +16,7 @@ import java.util.*
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 import com.example.syntheticspirit.data.AppDatabase
+import com.example.syntheticspirit.data.DnsLog
 import kotlinx.coroutines.runBlocking
 import androidx.collection.LruCache
 import com.google.common.hash.BloomFilter
@@ -28,9 +29,6 @@ import androidx.compose.runtime.mutableLongStateOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
-import androidx.compose.runtime.mutableStateListOf
-
-data class DnsLogItem(val domain: String, val isBlocked: Boolean, val timestamp: Long)
 
 class DnsVpnService : VpnService() {
     companion object {
@@ -42,12 +40,6 @@ class DnsVpnService : VpnService() {
 
         private val _serviceStartTime = mutableLongStateOf(0L)
         val serviceStartTime: State<Long> = _serviceStartTime
-        
-        val dnsLogs = mutableStateListOf<DnsLogItem>()
-        
-        fun clearLogs() {
-            dnsLogs.clear()
-        }
     }
 
     private var vpnInterface: ParcelFileDescriptor? = null
@@ -58,7 +50,7 @@ class DnsVpnService : VpnService() {
     private var bloomFilter: BloomFilter<CharSequence>? = null
     
     private lateinit var db: AppDatabase
-    private lateinit var whitelistManager: WhitelistManager
+    private lateinit var blocklistManager: BlocklistManager
 
     private val upstreamDns = "8.8.8.8"
     private val dnsExecutor = Executors.newFixedThreadPool(10)
@@ -69,7 +61,7 @@ class DnsVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         db = AppDatabase.getDatabase(this)
-        whitelistManager = WhitelistManager(this)
+        blocklistManager = BlocklistManager(this)
         createNotificationChannel()
         loadBloomFilter()
         
@@ -284,14 +276,16 @@ class DnsVpnService : VpnService() {
         serverPort: Int,
         output: FileOutputStream
     ) {
-        val isDomainBlocked = isBlocked(domain)
+        val isDomainBlocked = runBlocking(Dispatchers.IO) { db.blockedDomainDao().isBlocked(domain.toString()) }
 
-        val logItem = DnsLogItem(domain.toString(), isDomainBlocked, System.currentTimeMillis())
-        synchronized(dnsLogs) {
-            dnsLogs.add(0, logItem)
-            if (dnsLogs.size > 100) {
-                dnsLogs.removeLast()
-            }
+        val logItem = DnsLog(
+            domain = domain.toString(),
+            isBlocked = isDomainBlocked,
+            timestamp = System.currentTimeMillis()
+        )
+
+        GlobalScope.launch(Dispatchers.IO) {
+            db.dnsLogDao().insert(logItem)
         }
 
         if (isDomainBlocked) {
@@ -343,30 +337,6 @@ class DnsVpnService : VpnService() {
         } finally {
             socket?.close()
         }
-    }
-
-    private fun isBlocked(query: CharSequence?): Boolean {
-        if (query == null) return false
-
-        if (bloomFilter?.mightContain(query) == false) {
-            return false
-        }
-
-        val domain = query.toString()
-
-        lookupCache.get(domain)?.let { return it }
-
-        if (whitelistManager.isWhitelisted(domain)) {
-            lookupCache.put(domain, false)
-            return false
-        }
-
-        val isExact = runBlocking(Dispatchers.IO) {
-            db.blockedDomainDao().isBlocked(domain)
-        }
-
-        lookupCache.put(domain, isExact)
-        return isExact
     }
 
     private val dnsStringBuilder = object : ThreadLocal<StringBuilder>() {

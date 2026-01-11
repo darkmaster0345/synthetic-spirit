@@ -46,11 +46,11 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun MainScreen() {
         val isRunning by DnsVpnService.isRunning
-        val blockedCount by DnsVpnService.blockedCount
         val serviceStartTime by DnsVpnService.serviceStartTime
         var sessionSeconds by remember { mutableStateOf(0L) }
         var showLogs by remember { mutableStateOf(false) }
-        var showBlocklistManager by remember { mutableStateOf(false) }
+        var showBlocklistSettings by remember { mutableStateOf(false) }
+        var showBlocklistUrls by remember { mutableStateOf(false) }
         var showBatteryOptimizationDialog by remember { mutableStateOf(false) }
 
         if (showBatteryOptimizationDialog) {
@@ -70,7 +70,11 @@ class MainActivity : ComponentActivity() {
 
         when {
             showLogs -> QueryLogScreen(onBack = { showLogs = false })
-            showBlocklistManager -> BlocklistManagerScreen()
+            showBlocklistSettings -> BlocklistSettingsScreen(
+                onBack = { showBlocklistSettings = false },
+                onManageUrls = { showBlocklistUrls = true }
+            )
+            showBlocklistUrls -> BlocklistUrlScreen()
             else -> {
                 Column(
                     modifier = Modifier
@@ -130,7 +134,7 @@ class MainActivity : ComponentActivity() {
                             Text("View Logs")
                         }
                         Spacer(modifier = Modifier.width(16.dp))
-                        TextButton(onClick = { showBlocklistManager = true }) {
+                        TextButton(onClick = { showBlocklistSettings = true }) {
                             Text("Manage Blocklist")
                         }
                     }

@@ -34,6 +34,16 @@ Synthetic Spirit is optimized for speed and battery life:
 ## FOSS (Free and Open Source Software)
 This project is 100% Free and Open Source. It contains no trackers, no analytics, and no proprietary dependencies.
 
+## Why Synthetic Spirit?
+
+While services like Cloudflare or AdGuard Family are excellent, **Synthetic Spirit** solves specific problems that Cloud-based DNS cannot:
+
+* **Zero Latency:** Filtering happens locally on your device. There is no "round-trip" delay to a remote server, making your web browsing feel snappier.
+* **Total Privacy:** Your browsing history stays on your phone. You don't have to trust a third-party company with a "digital paper trail" of every site you visit.
+* **Bloom Filter Efficiency:** We use advanced probabilistic data structures (Bloom Filters) to check millions of blocked domains instantly with near-zero battery impact.
+* **Network Independence:** Unlike system DNS settings, Synthetic Spirit's local VPN tunnel protects you automatically across 5G, LTE, and Public Wi-Fi without manual reconfiguration.
+* **ISP Stealth:** Prevents "Transparent DNS Proxying" where ISPs hijack and monitor your DNS requests, even when using "Private DNS" settings.
+
 ## License
 Distributed under the MIT License. See `LICENSE` for more information.
 

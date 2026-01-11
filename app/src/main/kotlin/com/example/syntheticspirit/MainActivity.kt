@@ -1,8 +1,12 @@
 package com.example.syntheticspirit
 
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.net.VpnService
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -17,7 +21,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.syntheticspirit.ui.theme.SyntheticSpiritTheme
@@ -46,6 +49,13 @@ class MainActivity : ComponentActivity() {
         val blockedCount by DnsVpnService.blockedCount
         val serviceStartTime by DnsVpnService.serviceStartTime
         var sessionSeconds by remember { mutableStateOf(0L) }
+        var showLogs by remember { mutableStateOf(false) }
+        var showBlocklistManager by remember { mutableStateOf(false) }
+        var showBatteryOptimizationDialog by remember { mutableStateOf(false) }
+
+        if (showBatteryOptimizationDialog) {
+            BatteryOptimizationDialog { showBatteryOptimizationDialog = false }
+        }
 
         LaunchedEffect(isRunning) {
             if (isRunning) {
@@ -58,53 +68,101 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(24.dp),
-            verticalArrangement = Arrangement.Center,
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            StatusOrb(isActive = isRunning)
+        when {
+            showLogs -> QueryLogScreen(onBack = { showLogs = false })
+            showBlocklistManager -> BlocklistManagerScreen()
+            else -> {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    StatusOrb(isActive = isRunning)
 
-            Spacer(modifier = Modifier.height(24.dp))
+                    Spacer(modifier = Modifier.height(24.dp))
 
-            Text(
-                text = if (isRunning) "Shield Active" else "Shield Inactive",
-                fontSize = 26.sp,
-                color = Color.White
-            )
+                    Text(
+                        text = if (isRunning) "Shield Active" else "Shield Inactive",
+                        fontSize = 26.sp,
+                        color = Color.White
+                    )
 
-            Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
 
-            if (isRunning) {
-                Text(
-                    text = "${sessionSeconds / 3600}h ${(sessionSeconds % 3600) / 60}m ${sessionSeconds % 60}s",
-                    fontSize = 18.sp,
-                    color = Color(0xFF00FFFF)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(48.dp))
-
-            Button(
-                onClick = {
                     if (isRunning) {
-                        stopVpnService()
-                    } else {
-                        startVpnService()
+                        Text(
+                            text = "${sessionSeconds / 3600}h ${(sessionSeconds % 3600) / 60}m ${sessionSeconds % 60}s",
+                            fontSize = 18.sp,
+                            color = Color(0xFF00FFFF)
+                        )
                     }
-                },
-                modifier = Modifier.fillMaxWidth(0.7f),
-                colors = ButtonDefaults.buttonColors(containerColor = if (isRunning) Color(0xFFB71C1C) else Color(0xFF1A237E))
-            ) {
-                Text(
-                    text = if (isRunning) "Deactivate Shield" else "Activate Shield",
-                    fontSize = 18.sp,
-                    color = Color.White
-                )
+
+                    Spacer(modifier = Modifier.height(48.dp))
+
+                    Button(
+                        onClick = {
+                            if (isRunning) {
+                                stopVpnService()
+                            } else {
+                                if (isBatteryOptimizationIgnored()) {
+                                    startVpnService()
+                                } else {
+                                    showBatteryOptimizationDialog = true
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(0.7f),
+                        colors = ButtonDefaults.buttonColors(containerColor = if (isRunning) Color(0xFFB71C1C) else Color(0xFF1A237E))
+                    ) {
+                        Text(
+                            text = if (isRunning) "Deactivate Shield" else "Activate Shield",
+                            fontSize = 18.sp,
+                            color = Color.White
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row {
+                        TextButton(onClick = { showLogs = true }) {
+                            Text("View Logs")
+                        }
+                        Spacer(modifier = Modifier.width(16.dp))
+                        TextButton(onClick = { showBlocklistManager = true }) {
+                            Text("Manage Blocklist")
+                        }
+                    }
+                }
             }
         }
+    }
+
+    @Composable
+    fun BatteryOptimizationDialog(onDismiss: () -> Unit) {
+        AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { Text("Background Operation") },
+            text = { Text("To ensure the shield remains active, please allow the app to run in the background without restrictions.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                        intent.data = Uri.parse("package:$packageName")
+                        startActivity(intent)
+                        onDismiss()
+                    }
+                ) {
+                    Text("Allow")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismiss) {
+                    Text("Later")
+                }
+            }
+        )
     }
 
     @Composable
@@ -125,8 +183,15 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun isBatteryOptimizationIgnored(): Boolean {
+        val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+        return powerManager.isIgnoringBatteryOptimizations(packageName)
+    }
 
     private fun startVpnService() {
+        val prefs = getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("was_running", true).apply()
+
         val intent = VpnService.prepare(this)
         if (intent != null) {
             startActivityForResult(intent, 0)
@@ -138,6 +203,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopVpnService() {
+        val prefs = getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("was_running", false).apply()
+
         val serviceIntent = Intent(this, DnsVpnService::class.java)
         serviceIntent.action = "STOP"
         startService(serviceIntent)

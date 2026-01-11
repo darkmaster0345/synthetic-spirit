@@ -5,10 +5,9 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [BlockedDomain::class, WhitelistedDomain::class], version = 2, exportSchema = true)
+@Database(entities = [BlockedDomain::class], version = 2, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun blockedDomainDao(): BlockedDomainDao
-    abstract fun whitelistedDomainDao(): WhitelistedDomainDao
 
     companion object {
         @Volatile
@@ -21,10 +20,8 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "synthetic_spirit_db"
                 )
-                // For a FOSS app with 200k+ entries, we NEVER use destructive migration on upgrade.
-                // In version 2+, we will use @AutoMigration(from = 1, to = 2) to preserve data.
-                .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING) // Prevent UI stutter
-                .fallbackToDestructiveMigrationOnDowngrade() // Only wipe on downgrade to prevent crashes
+                .fallbackToDestructiveMigration()
+                .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
                 .build()
                 INSTANCE = instance
                 instance

@@ -10,22 +10,27 @@ import java.io.FileOutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.util.*
+import java.util.concurrent.Executors
 import kotlin.concurrent.thread
-
 import com.example.syntheticspirit.data.AppDatabase
-import com.example.syntheticspirit.data.BlockedDomain
 import kotlinx.coroutines.runBlocking
 import androidx.collection.LruCache
 import com.google.common.hash.BloomFilter
 import com.google.common.hash.Funnels
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.nio.charset.Charset
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableLongStateOf
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.mutableStateListOf
+
+data class DnsLogItem(val domain: String, val isBlocked: Boolean, val timestamp: Long)
 
 class DnsVpnService : VpnService() {
     companion object {
@@ -37,22 +42,26 @@ class DnsVpnService : VpnService() {
 
         private val _serviceStartTime = mutableLongStateOf(0L)
         val serviceStartTime: State<Long> = _serviceStartTime
+        
+        val dnsLogs = mutableStateListOf<DnsLogItem>()
+        
+        fun clearLogs() {
+            dnsLogs.clear()
+        }
     }
 
     private var vpnInterface: ParcelFileDescriptor? = null
     private var vpnThread: Thread? = null
     
-    // Fast LRU cache for common repeats
     private val lookupCache = LruCache<String, Boolean>(2000)
     
-    // Probabilistic O(1) in-memory filter (~2MB for 200k URLs)
     private var bloomFilter: BloomFilter<CharSequence>? = null
     
     private lateinit var db: AppDatabase
+    private lateinit var whitelistManager: WhitelistManager
 
     private val upstreamDns = "8.8.8.8"
-    private var upstreamChannel: java.nio.channels.DatagramChannel? = null
-    private val dnsExecutor = java.util.concurrent.Executors.newFixedThreadPool(10)
+    private val dnsExecutor = Executors.newFixedThreadPool(10)
 
     private val CHANNEL_ID = "vpn_notifications"
     private val NOTIFICATION_ID = 1
@@ -60,18 +69,12 @@ class DnsVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         db = AppDatabase.getDatabase(this)
+        whitelistManager = WhitelistManager(this)
         createNotificationChannel()
         loadBloomFilter()
         
         val prefs = getSharedPreferences("vpn_prefs", MODE_PRIVATE)
         _blockedCount.value = prefs.getInt("threats_blocked", 0)
-
-        try {
-            upstreamChannel = java.nio.channels.DatagramChannel.open()
-            upstreamChannel?.configureBlocking(false) // Non-blocking for high performance
-        } catch (e: Exception) {
-            Log.e("DnsVpnService", "Failed to open upstream channel", e)
-        }
     }
 
     private fun loadBloomFilter(forceRebuild: Boolean = false) {
@@ -80,7 +83,6 @@ class DnsVpnService : VpnService() {
         GlobalScope.launch(Dispatchers.IO) {
             try {
                 if (!forceRebuild && filterFile.exists()) {
-                    // Fast path: Load serialized filter from disk (O(1) relative to DB scan)
                     java.io.FileInputStream(filterFile).use { fis ->
                         bloomFilter = BloomFilter.readFrom(fis, Funnels.stringFunnel(Charset.defaultCharset()))
                         Log.d("DnsVpnService", "Bloom Filter loaded from disk cache.")
@@ -88,26 +90,23 @@ class DnsVpnService : VpnService() {
                     }
                 }
 
-                // Slow path: Rebuild from Database using a Cursor for memory efficiency
-                Log.d("DnsVpnService", "Rebuilding Bloom Filter from database (Cursor mode)...")
-                val cursor = db.blockedDomainDao().getAllDomainsCursor()
-                
+                Log.d("DnsVpnService", "Rebuilding Bloom Filter from assets/blocked_domains.txt...")
+
                 val filter = BloomFilter.create(
                     Funnels.stringFunnel(Charset.defaultCharset()),
-                    250000,
+                    50000, 
                     0.01
                 )
-                
-                try {
-                    while (cursor.moveToNext()) {
-                        val domain = cursor.getString(0)
-                        filter.put(domain)
+
+                assets.open("blocked_domains.txt").use { inputStream ->
+                    BufferedReader(InputStreamReader(inputStream)).forEachLine { line ->
+                        val domain = line.trim().lowercase()
+                        if (domain.isNotEmpty()) {
+                            filter.put(domain)
+                        }
                     }
-                } finally {
-                    cursor.close()
                 }
-                
-                // Persist to disk for next time
+
                 java.io.FileOutputStream(filterFile).use { fos ->
                     filter.writeTo(fos)
                 }
@@ -122,7 +121,6 @@ class DnsVpnService : VpnService() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         super.onTaskRemoved(rootIntent)
-        // Ensure we stay running if swiped away
         Log.d("DnsVpnService", "Task removed, staying active.")
     }
 
@@ -186,38 +184,26 @@ class DnsVpnService : VpnService() {
             try {
                 val builder = Builder()
                 builder.setSession("SyntheticSpirit")
-                
-                // IPv4 Configuration
-                builder.addAddress("10.0.0.2", 32)
-                builder.addDnsServer("8.8.8.8")
-                builder.addRoute("0.0.0.0", 0)
-                
-                // IPv6 Configuration (Preventing IPv6 Leaks)
-                builder.addAddress("fd00::2", 128)
-                builder.addDnsServer("2001:4860:4860::8888")
-                builder.addRoute("::", 0)
-                
-                // Allow Captive Portal login to bypass VPN (Public Wi-Fi logins)
+
+                builder.addAddress("10.0.0.2", 24)
+                builder.addDnsServer("10.0.0.1")
+
+                builder.addAddress("fd00::2", 120)
+                builder.addDnsServer("fd00::1")
+
                 try {
                     builder.addDisallowedApplication("com.android.captiveportallogin")
                 } catch (e: Exception) {
                     // Package not found on this device, skip
                 }
-                
-                // KILL SWITCH LOGIC:
-                // 1. System-level blocking (API 33+)
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                    builder.setBlocking(true) 
-                }
-                
-                // 2. Disallow local bypass
+
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
                     builder.setMetered(false)
                 }
 
                 vpnInterface = builder.establish()
                 Log.d("DnsVpnService", "VPN Interface established")
-                
+
                 runVpnLoop()
             } catch (e: Exception) {
                 Log.e("DnsVpnService", "Error in VPN thread", e)
@@ -257,13 +243,12 @@ class DnsVpnService : VpnService() {
         val posBefore = packet.position()
         val firstByte = packet.get().toInt() and 0xFF
         val version = (firstByte shr 4) and 0x0F
-        if (version != 4) return 
+        if (version != 4) return
 
         packet.position(posBefore + 9)
         val protocol = packet.get().toInt() and 0xFF
-        if (protocol != 17) return 
+        if (protocol != 17) return // Not UDP
 
-        // Extract IPs without allocating ByteArrays
         packet.position(posBefore + 12)
         val srcIpInt = packet.int
         val dstIpInt = packet.int
@@ -276,20 +261,18 @@ class DnsVpnService : VpnService() {
         val dstPort = packet.short.toInt() and 0xFFFF
         val udpLength = packet.short.toInt() and 0xFFFF
         
-        if (dstPort != 53) return 
+        if (dstPort != 53) return
 
         val dnsDataSize = udpLength - 8
         if (dnsDataSize <= 0 || packet.remaining() < dnsDataSize) return
         
-        // No allocation - parse directly from the direct buffer
         val domain = parseDnsDomain(packet, dnsDataSize) ?: return
 
-        // Copying and forwarding still needs a heap array for the upstream send,
-        // but it's much more contained now.
-        val dnsData = ByteArray(dnsDataSize)
-        packet.get(dnsData)
+        val originalDnsData = ByteArray(dnsDataSize)
+        packet.position(packet.position() - dnsDataSize)
+        packet.get(originalDnsData)
 
-        processDnsQuery(dnsData, domain, srcIpInt, srcPort, dstIpInt, dstPort, output)
+        processDnsQuery(originalDnsData, domain, srcIpInt, srcPort, dstIpInt, dstPort, output)
     }
 
     private fun processDnsQuery(
@@ -301,8 +284,17 @@ class DnsVpnService : VpnService() {
         serverPort: Int,
         output: FileOutputStream
     ) {
-        
-        if (isBlocked(domain)) {
+        val isDomainBlocked = isBlocked(domain)
+
+        val logItem = DnsLogItem(domain.toString(), isDomainBlocked, System.currentTimeMillis())
+        synchronized(dnsLogs) {
+            dnsLogs.add(0, logItem)
+            if (dnsLogs.size > 100) {
+                dnsLogs.removeLast()
+            }
+        }
+
+        if (isDomainBlocked) {
             Log.i("DnsVpnService", "Blocked: $domain")
             _blockedCount.value++
             getSharedPreferences("vpn_prefs", MODE_PRIVATE).edit()
@@ -313,28 +305,8 @@ class DnsVpnService : VpnService() {
         } else {
             dnsExecutor.execute {
                 try {
-                    val upstreamAddr = java.net.InetSocketAddress(upstreamDns, 53)
-                    val queryBuffer = ByteBuffer.wrap(dnsData)
-                    
-                    // Non-blocking persistent channel check
-                    upstreamChannel?.send(queryBuffer, upstreamAddr)
-
-                    val inBuffer = ByteBuffer.allocateDirect(1024)
-                    var retry = 0
-                    var remoteAddr: java.net.SocketAddress? = null
-                    
-                    // Simple poll for response (keep it non-blocking but small wait)
-                    while (remoteAddr == null && retry < 100) {
-                        remoteAddr = upstreamChannel?.receive(inBuffer)
-                        if (remoteAddr == null) Thread.sleep(10)
-                        retry++
-                    }
-
-                    if (remoteAddr != null) {
-                        inBuffer.flip()
-                        val dnsResponse = ByteArray(inBuffer.remaining())
-                        inBuffer.get(dnsResponse)
-
+                    val dnsResponse = forwardDnsPacket(dnsData)
+                    if (dnsResponse != null) {
                         val finalPacket = wrapUdpIp(dnsResponse, clientIpInt, clientPort, serverIpInt, serverPort)
                         synchronized(output) {
                             output.write(finalPacket)
@@ -347,22 +319,48 @@ class DnsVpnService : VpnService() {
         }
     }
 
+    private fun forwardDnsPacket(data: ByteArray): ByteArray? {
+        var socket: DatagramSocket? = null
+        return try {
+            socket = DatagramSocket()
+            socket.bind(InetSocketAddress(0))
+            protect(socket)
+
+            socket.soTimeout = 2000 // 2 second timeout
+
+            val upstreamAddr = InetAddress.getByName(upstreamDns)
+            val queryPacket = DatagramPacket(data, data.size, upstreamAddr, 53)
+            socket.send(queryPacket)
+
+            val responseBuffer = ByteArray(1024)
+            val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
+            socket.receive(responsePacket)
+
+            responsePacket.data.copyOf(responsePacket.length)
+        } catch (e: Exception) {
+            Log.e("DnsVpnService", "Failed to forward DNS packet", e)
+            null
+        } finally {
+            socket?.close()
+        }
+    }
+
     private fun isBlocked(query: CharSequence?): Boolean {
         if (query == null) return false
-        
-        // 1. O(1) Memory Cache - We only allocate a String here if not already cached
-        // To avoid allocation on every check, we check Bloom Filter first for "Clean" domains
-        
-        // 2. O(1) Probabilistic Check (Bloom Filter) - No allocation!
+
         if (bloomFilter?.mightContain(query) == false) {
             return false
         }
 
-        // 3. Potential Match - Now we allocate the String for definitive checks
-        val domain = query.toString().lowercase()
+        val domain = query.toString()
+
         lookupCache.get(domain)?.let { return it }
 
-        // 4. O(log N) Disk Lookup (Indexed Room DB)
+        if (whitelistManager.isWhitelisted(domain)) {
+            lookupCache.put(domain, false)
+            return false
+        }
+
         val isExact = runBlocking(Dispatchers.IO) {
             db.blockedDomainDao().isBlocked(domain)
         }
@@ -383,20 +381,40 @@ class DnsVpnService : VpnService() {
         val startPos = packet.position()
         var pos = startPos + 12
         val endPos = startPos + dnsDataSize
-        
-        while (pos < endPos) {
-            val len = packet.get(pos).toInt() and 0xFF
-            if (len == 0) break
-            if (sb.isNotEmpty()) sb.append('.')
-            pos++
-            if (pos + len > endPos) break
-            for (i in 0 until len) {
-                sb.append(packet.get(pos + i).toInt().toChar())
+        var jumped = false
+
+        fun readSegment(currentPos: Int): Int {
+            var p = currentPos
+            while (true) {
+                if (p >= endPos) return -1
+                val len = packet.get(p).toInt() and 0xFF
+                if (len == 0) return p + 1
+
+                if ((len and 0xC0) == 0xC0) { // Pointer
+                    if (p + 1 >= endPos) return -1
+                    val offset = ((len and 0x3F) shl 8) or (packet.get(p + 1).toInt() and 0xFF)
+                    if (!jumped) {
+                        jumped = true
+                        readSegment(startPos - 12 + offset)
+                    }
+                    return p + 2
+                }
+
+                p++
+                if (p + len > endPos) return -1
+
+                if (sb.isNotEmpty()) sb.append('.')
+                for (i in 0 until len) {
+                    sb.append(packet.get(p + i).toInt().toChar().lowercaseChar())
+                }
+                p += len
             }
-            pos += len
         }
-        return if (sb.isEmpty()) null else sb
+
+        val finalPos = readSegment(pos)
+        return if (finalPos == -1 || sb.isEmpty()) null else sb
     }
+
 
     private fun createNxDomainResponse(
         queryDnsData: ByteArray,
@@ -424,7 +442,6 @@ class DnsVpnService : VpnService() {
         val out = ByteArray(ipLen)
         val buffer = ByteBuffer.wrap(out)
         
-        // IP Header
         buffer.put(0x45.toByte()) 
         buffer.put(0x00.toByte()) 
         buffer.putShort(ipLen.toShort())
@@ -439,7 +456,6 @@ class DnsVpnService : VpnService() {
         val ipChecksum = calculateChecksum(out, 0, 20)
         buffer.putShort(10, ipChecksum)
         
-        // UDP Header
         buffer.putShort(srcPort.toShort())
         buffer.putShort(dstPort.toShort())
         buffer.putShort(udpLen.toShort())
@@ -481,7 +497,6 @@ class DnsVpnService : VpnService() {
         _isRunning.value = false
         stopVpn()
         dnsExecutor.shutdownNow()
-        try { upstreamChannel?.close() } catch (e: Exception) {}
         super.onDestroy()
     }
 }

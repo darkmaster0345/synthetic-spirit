@@ -3,8 +3,7 @@ package com.example.syntheticspirit.data
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "whitelisted_domains")
+@Entity(tableName = "user_whitelist")
 data class WhitelistedDomain(
-    @PrimaryKey
-    val domain: String
+    @PrimaryKey val domain: String
 )

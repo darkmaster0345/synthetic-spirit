@@ -1,5 +1,50 @@
-# Project exclude paths
-/.gradle/
-/app/build/
-/app/build/intermediates/javac/debug/classes/
-/build/
+# Android Studio
+
+# Built application files
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Files for the ART/Dalvik VM
+*.dex
+
+# Built-in plugins
+.idea/
+
+# Gradle files
+.gradle/
+build/
+
+# Local configuration file (sdk path, etc)
+local.properties
+
+# Keystore files
+*.jks
+*.keystore
+
+# Log files
+*.log
+
+# Profiler data
+*.hprof
+
+# C/C++ autocomplete files
+.cxx/
+
+# CMake files
+cmake-build-debug/
+cmake-build-release/
+
+# Generated files
+**/build/
+
+# Ignore Unsigned AAR files
+*unsigned.aar
+
+# Binary files
+*.bin
+
+# Jar files
+*.jar
+!gradle/wrapper/gradle-wrapper.jar

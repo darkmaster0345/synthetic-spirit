@@ -1,0 +1,12 @@
+<b>High-Performance DNS Sinkhole for Privacy and Ad-Blocking</b>
+
+Synthetic Spirit is a high-performance DNS sinkhole that blocks ads, trackers, and malicious domains using the Steven Black blocklist. It's designed for privacy-conscious users who want to take control of their network traffic.
+
+<b>Features:</b>
+<ul>
+  <li><b>Efficient Blocking:</b> Uses a Bloom Filter and an LRU cache for near-instantaneous domain lookups, ensuring no performance impact.</li>
+  <li><b>Local DNS Interception:</b> Intercepts DNS requests on port 53 without routing all your traffic through the VPN.</li>
+  <li><b>Privacy Focused:</b> Returns an NXDOMAIN response for any domain in the blocklist, preventing your device from connecting to them.</li>
+  <li><b>Customizable:</b> You can add or remove domains from the blocklist.</li>
+  <li><b>FOSS:</b> This project is 100% Free and Open Source, with no trackers, no analytics, and no proprietary dependencies.</li>
+</ul>

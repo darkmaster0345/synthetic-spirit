@@ -1,34 +1,38 @@
 package com.example.syntheticspirit
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Intent
 import android.net.VpnService
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import androidx.collection.LruCache
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.core.app.NotificationCompat
+import com.example.syntheticspirit.data.AppDatabase
+import com.example.syntheticspirit.data.DnsLog
+import com.google.common.hash.BloomFilter
+import com.google.common.hash.Funnels
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import java.io.BufferedReader
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStreamReader
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
-import java.util.*
+import java.nio.charset.Charset
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
-import com.example.syntheticspirit.data.AppDatabase
-import com.example.syntheticspirit.data.DnsLog
-import kotlinx.coroutines.runBlocking
-import androidx.collection.LruCache
-import com.google.common.hash.BloomFilter
-import com.google.common.hash.Funnels
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.nio.charset.Charset
-import androidx.compose.runtime.State
-import androidx.compose.runtime.mutableLongStateOf
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.launch
 
 class DnsVpnService : VpnService() {
     companion object {
@@ -46,7 +50,6 @@ class DnsVpnService : VpnService() {
     private var vpnThread: Thread? = null
     
     private val lookupCache = LruCache<String, Boolean>(2000)
-    
     private var bloomFilter: BloomFilter<CharSequence>? = null
     
     private lateinit var db: AppDatabase
@@ -75,7 +78,7 @@ class DnsVpnService : VpnService() {
         GlobalScope.launch(Dispatchers.IO) {
             try {
                 if (!forceRebuild && filterFile.exists()) {
-                    java.io.FileInputStream(filterFile).use { fis ->
+                    FileInputStream(filterFile).use { fis ->
                         bloomFilter = BloomFilter.readFrom(fis, Funnels.stringFunnel(Charset.defaultCharset()))
                         Log.d("DnsVpnService", "Bloom Filter loaded from disk cache.")
                         return@launch
@@ -99,7 +102,7 @@ class DnsVpnService : VpnService() {
                     }
                 }
 
-                java.io.FileOutputStream(filterFile).use { fos ->
+                FileOutputStream(filterFile).use { fos ->
                     filter.writeTo(fos)
                 }
                 
@@ -111,97 +114,82 @@ class DnsVpnService : VpnService() {
         }
     }
 
-    override fun onTaskRemoved(rootIntent: Intent?) {
-        super.onTaskRemoved(rootIntent)
-        Log.d("DnsVpnService", "Task removed, staying active.")
-    }
-
-    private fun createNotificationChannel() {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            val channel = android.app.NotificationChannel(
-                CHANNEL_ID,
-                "Protection Status",
-                android.app.NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Shows when DNS protection is active"
-            }
-            val manager = getSystemService(android.app.NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == "STOP") {
+            stopVpn()
+            return START_NOT_STICKY
         }
+
+        if (intent?.action == "RELOAD_BLOCKLIST") {
+            lookupCache.evictAll()
+            loadBloomFilter(forceRebuild = true)
+            return START_STICKY
+        }
+
+        // Start Foreground immediately for Android 15 compliance
+        showNotification()
+
+        if (!_isRunning.value) {
+            _serviceStartTime.value = System.currentTimeMillis()
+            _isRunning.value = true
+            startVpn()
+        }
+        
+        return START_STICKY
     }
 
     private fun showNotification() {
-        val notification = androidx.core.app.NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Synthetic Spirit Active")
-            .setContentText("Your digital space is currently protected.")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_LOW)
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Synthetic Spirit Shield Active")
+            .setContentText("Local DNS filtering is protecting your device.")
+            .setSmallIcon(android.R.drawable.ic_lock_idle_lock) // Changed to lock icon for visibility
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(Notification.CATEGORY_SERVICE)
             .setOngoing(true)
             .build()
         
         startForeground(NOTIFICATION_ID, notification)
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
-            "STOP" -> {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                } else {
-                    @Suppress("DEPRECATION")
-                    stopForeground(true)
-                }
-                stopVpn()
-                return START_NOT_STICKY
-            }
-            "RELOAD_BLOCKLIST" -> {
-                lookupCache.evictAll()
-                loadBloomFilter(forceRebuild = true)
-                return START_STICKY
-            }
-        }
-        if (!_isRunning.value) {
-            _serviceStartTime.value = System.currentTimeMillis()
-        }
-        _isRunning.value = true
-        showNotification()
-        startVpn()
-        return START_STICKY
-    }
-
     private fun startVpn() {
         if (vpnThread != null) return
 
-        vpnThread = thread {
+        vpnThread = thread(start = true, name = "VpnLoop") {
             try {
                 val builder = Builder()
                 builder.setSession("SyntheticSpirit")
 
-                builder.addAddress("10.0.0.2", 24)
-                builder.addDnsServer("10.0.0.1")
+                // THE KEY ICON FIX: You must add a route for the system to show the icon.
+                // This captures all traffic so we can filter the DNS parts.
+                builder.addAddress("10.0.0.2", 32)
+                builder.addRoute("0.0.0.0", 0) 
+                builder.addDnsServer("10.0.0.2")
 
-                builder.addAddress("fd00::2", 120)
-                builder.addDnsServer("fd00::1")
+                // IPv6 Support
+                builder.addAddress("fd00::2", 128)
+                builder.addRoute("::", 0)
+                builder.addDnsServer("fd00::2")
 
+                // Prevent the app from filtering its own requests (Prevents loops)
                 try {
+                    builder.addDisallowedApplication(packageName)
                     builder.addDisallowedApplication("com.android.captiveportallogin")
                 } catch (e: Exception) {
-                    // Package not found on this device, skip
+                    // Packages might not exist, ignore
                 }
 
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     builder.setMetered(false)
                 }
 
                 vpnInterface = builder.establish()
-                Log.d("DnsVpnService", "VPN Interface established")
+                Log.d("DnsVpnService", "VPN Interface established. Key icon should appear now.")
 
                 runVpnLoop()
             } catch (e: Exception) {
                 Log.e("DnsVpnService", "Error in VPN thread", e)
             } finally {
-                Log.d("DnsVpnService", "VPN thread finishing, stopping service")
-                stopSelf()
+                stopVpn()
             }
         }
     }
@@ -210,23 +198,22 @@ class DnsVpnService : VpnService() {
         val vpnFileDescriptor = vpnInterface?.fileDescriptor ?: return
         val input = FileInputStream(vpnFileDescriptor)
         val output = FileOutputStream(vpnFileDescriptor)
-        val inChannel = input.channel
         val buffer = ByteBuffer.allocateDirect(16384)
 
         try {
             while (!Thread.interrupted() && _isRunning.value) {
                 buffer.clear()
-                val length = inChannel.read(buffer)
+                val length = input.read(buffer.array())
                 if (length > 0) {
-                    buffer.flip()
+                    buffer.limit(length)
                     handlePacket(buffer, output)
                 }
             }
         } catch (e: Exception) {
             Log.e("DnsVpnService", "Loop error", e)
         } finally {
-            try { input.close() } catch (e: Exception) {}
-            try { output.close() } catch (e: Exception) {}
+            input.close()
+            output.close()
         }
     }
 
@@ -239,7 +226,7 @@ class DnsVpnService : VpnService() {
 
         packet.position(posBefore + 9)
         val protocol = packet.get().toInt() and 0xFF
-        if (protocol != 17) return // Not UDP
+        if (protocol != 17) return // Only UDP
 
         packet.position(posBefore + 12)
         val srcIpInt = packet.int
@@ -253,7 +240,7 @@ class DnsVpnService : VpnService() {
         val dstPort = packet.short.toInt() and 0xFFFF
         val udpLength = packet.short.toInt() and 0xFFFF
         
-        if (dstPort != 53) return
+        if (dstPort != 53) return // Only DNS
 
         val dnsDataSize = udpLength - 8
         if (dnsDataSize <= 0 || packet.remaining() < dnsDataSize) return
@@ -276,7 +263,10 @@ class DnsVpnService : VpnService() {
         serverPort: Int,
         output: FileOutputStream
     ) {
-        val isDomainBlocked = runBlocking(Dispatchers.IO) { db.blockedDomainDao().isBlocked(domain.toString()) }
+        val isDomainBlocked = runBlocking(Dispatchers.IO) { 
+            db.blockedDomainDao().isBlocked(domain.toString()) || 
+            (bloomFilter?.mightContain(domain.toString()) ?: false)
+        }
 
         val logItem = DnsLog(
             domain = domain.toString(),
@@ -317,10 +307,8 @@ class DnsVpnService : VpnService() {
         var socket: DatagramSocket? = null
         return try {
             socket = DatagramSocket()
-            socket.bind(InetSocketAddress(0))
             protect(socket)
-
-            socket.soTimeout = 2000 // 2 second timeout
+            socket.soTimeout = 2000 
 
             val upstreamAddr = InetAddress.getByName(upstreamDns)
             val queryPacket = DatagramPacket(data, data.size, upstreamAddr, 53)
@@ -332,59 +320,31 @@ class DnsVpnService : VpnService() {
 
             responsePacket.data.copyOf(responsePacket.length)
         } catch (e: Exception) {
-            Log.e("DnsVpnService", "Failed to forward DNS packet", e)
             null
         } finally {
             socket?.close()
         }
     }
 
-    private val dnsStringBuilder = object : ThreadLocal<StringBuilder>() {
-        override fun initialValue() = StringBuilder(256)
-    }
-
     private fun parseDnsDomain(packet: ByteBuffer, dnsDataSize: Int): CharSequence? {
-        if (dnsDataSize < 12) return null
-        val sb = dnsStringBuilder.get()
-        sb.setLength(0)
-        
+        val sb = StringBuilder()
         val startPos = packet.position()
-        var pos = startPos + 12
-        val endPos = startPos + dnsDataSize
-        var jumped = false
-
-        fun readSegment(currentPos: Int): Int {
-            var p = currentPos
-            while (true) {
-                if (p >= endPos) return -1
-                val len = packet.get(p).toInt() and 0xFF
-                if (len == 0) return p + 1
-
-                if ((len and 0xC0) == 0xC0) { // Pointer
-                    if (p + 1 >= endPos) return -1
-                    val offset = ((len and 0x3F) shl 8) or (packet.get(p + 1).toInt() and 0xFF)
-                    if (!jumped) {
-                        jumped = true
-                        readSegment(startPos - 12 + offset)
-                    }
-                    return p + 2
-                }
-
-                p++
-                if (p + len > endPos) return -1
-
-                if (sb.isNotEmpty()) sb.append('.')
+        var pos = startPos + 12 // Skip DNS header
+        
+        try {
+            while (pos < startPos + dnsDataSize) {
+                val len = packet.get(pos).toInt() and 0xFF
+                if (len == 0) break
+                if (sb.isNotEmpty()) sb.append(".")
                 for (i in 0 until len) {
-                    sb.append(packet.get(p + i).toInt().toChar().lowercaseChar())
+                    sb.append(packet.get(pos + i + 1).toChar())
                 }
-                p += len
+                pos += len + 1
             }
-        }
-
-        val finalPos = readSegment(pos)
-        return if (finalPos == -1 || sb.isEmpty()) null else sb
+        } catch (e: Exception) { return null }
+        
+        return sb.toString().lowercase()
     }
-
 
     private fun createNxDomainResponse(
         queryDnsData: ByteArray,
@@ -419,17 +379,16 @@ class DnsVpnService : VpnService() {
         buffer.putShort(0x4000.toShort()) 
         buffer.put(64.toByte()) 
         buffer.put(17.toByte()) 
-        buffer.putShort(0.toShort()) // Checksum placeholder
+        buffer.putShort(0.toShort())
         buffer.putInt(srcIpInt)
         buffer.putInt(dstIpInt)
         
-        val ipChecksum = calculateChecksum(out, 0, 20)
-        buffer.putShort(10, ipChecksum)
+        buffer.putShort(10, calculateChecksum(out, 0, 20))
         
         buffer.putShort(srcPort.toShort())
         buffer.putShort(dstPort.toShort())
         buffer.putShort(udpLen.toShort())
-        buffer.putShort(0.toShort()) // No checksum (permissible for DNS)
+        buffer.putShort(0.toShort()) 
         
         buffer.put(dnsData)
         return out
@@ -450,21 +409,32 @@ class DnsVpnService : VpnService() {
         return (sum.inv() and 0xFFFF).toShort()
     }
 
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Protection Status",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
+        }
+    }
+
     private fun stopVpn() {
         _isRunning.value = false
+        _serviceStartTime.value = 0L
         vpnThread?.interrupt()
         vpnThread = null
         try {
             vpnInterface?.close()
-        } catch (e: Exception) {
-            Log.e("DnsVpnService", "Error closing VPN interface", e)
-        }
+        } catch (e: Exception) {}
         vpnInterface = null
+        stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     override fun onDestroy() {
-        _isRunning.value = false
         stopVpn()
         dnsExecutor.shutdownNow()
         super.onDestroy()

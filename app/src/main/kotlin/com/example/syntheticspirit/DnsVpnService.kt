@@ -26,6 +26,7 @@ import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.InputStreamReader
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -34,6 +35,8 @@ import java.nio.ByteBuffer
 import java.nio.charset.Charset
 import java.util.concurrent.Executors
 import kotlin.concurrent.thread
+
+private const val TAG = "DnsVpnService"
 
 class DnsVpnService : VpnService() {
     companion object {
@@ -74,7 +77,7 @@ class DnsVpnService : VpnService() {
             protect(persistentSocket)
             persistentSocket?.soTimeout = 2000
         } catch (e: Exception) {
-            Log.e("DnsVpnService", "Failed to create persistent socket", e)
+            Log.e(TAG, "Failed to create persistent socket", e)
         }
 
         val prefs = getSharedPreferences("vpn_prefs", MODE_PRIVATE)
@@ -89,12 +92,12 @@ class DnsVpnService : VpnService() {
                 if (!forceRebuild && filterFile.exists()) {
                     FileInputStream(filterFile).use { fis ->
                         bloomFilter = BloomFilter.readFrom(fis, Funnels.stringFunnel(Charset.defaultCharset()))
-                        Log.d("DnsVpnService", "Bloom Filter loaded from disk cache.")
+                        Log.d(TAG, "Bloom Filter loaded from disk cache.")
                         return@launch
                     }
                 }
 
-                Log.d("DnsVpnService", "Rebuilding Bloom Filter from assets/blocked_domains.txt...")
+                Log.d(TAG, "Rebuilding Bloom Filter from assets/blocked_domains.txt...")
 
                 val filter = BloomFilter.create(
                     Funnels.stringFunnel(Charset.defaultCharset()),
@@ -116,9 +119,9 @@ class DnsVpnService : VpnService() {
                 }
                 
                 bloomFilter = filter
-                Log.d("DnsVpnService", "Bloom Filter rebuilt and persisted.")
+                Log.d(TAG, "Bloom Filter rebuilt and persisted.")
             } catch (e: Exception) {
-                Log.e("DnsVpnService", "Failed to manage Bloom Filter", e)
+                Log.e(TAG, "Failed to manage Bloom Filter", e)
             }
         }
     }
@@ -185,11 +188,11 @@ class DnsVpnService : VpnService() {
                 }
 
                 vpnInterface = builder.establish()
-                Log.d("DnsVpnService", "VPN Interface established.")
+                Log.d(TAG, "VPN Interface established.")
 
                 runVpnLoop()
             } catch (e: Exception) {
-                Log.e("DnsVpnService", "Error in VPN thread", e)
+                Log.e(TAG, "Error in VPN thread", e)
             } finally {
                 stopVpn()
             }
@@ -212,7 +215,7 @@ class DnsVpnService : VpnService() {
                 }
             }
         } catch (e: Exception) {
-            Log.e("DnsVpnService", "Loop error", e)
+            Log.e(TAG, "Loop error", e)
         } finally {
             try { input.close() } catch (e: Exception) {}
             try { output.close() } catch (e: Exception) {}
@@ -237,17 +240,9 @@ class DnsVpnService : VpnService() {
             packet.position(posBefore + 12)
             srcIpInt = packet.int
             dstIpInt = packet.int
-        } else if (version == 6) {
-            // Very basic IPv6 handling
-            if (packet.remaining() < 40) return
-            packet.position(posBefore + 6)
-            protocol = packet.get().toInt() and 0xFF
-            packet.position(posBefore + 8)
-            // We just use a hash for the IP for now or ignore if not needed for DNS response
-            srcIpInt = 0
-            dstIpInt = 0
-            ihl = 40
         } else {
+            // Only support IPv4 for now; short-circuit other versions (like IPv6)
+            // as proper response paths for them are not implemented yet.
             return
         }
 
@@ -297,7 +292,7 @@ class DnsVpnService : VpnService() {
             db.dnsLogDao().insert(logItem)
 
             if (isDomainBlocked) {
-                Log.i("DnsVpnService", "Blocked: $domain")
+                Log.i(TAG, "Blocked: $domain")
                 _blockedCount.value++
                 getSharedPreferences("vpn_prefs", MODE_PRIVATE).edit()
                     .putInt("threats_blocked", _blockedCount.value).apply()
@@ -315,7 +310,7 @@ class DnsVpnService : VpnService() {
                             }
                         }
                     } catch (e: Exception) {
-                        Log.e("DnsVpnService", "Upstream error for $domain", e)
+                        Log.e(TAG, "Upstream error for $domain", e)
                     }
                 }
             }
@@ -323,19 +318,46 @@ class DnsVpnService : VpnService() {
     }
 
     private fun forwardDnsPacket(data: ByteArray): ByteArray? {
-        val socket = persistentSocket ?: return null
-        return try {
-            val upstreamAddr = InetAddress.getByName(upstreamDns)
-            val queryPacket = DatagramPacket(data, data.size, upstreamAddr, 53)
-            synchronized(socket) {
-                socket.send(queryPacket)
-                val responseBuffer = ByteArray(1024)
-                val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
-                socket.receive(responsePacket)
-                responsePacket.data.copyOf(responsePacket.length)
+        val upstreamAddr = InetAddress.getByName(upstreamDns)
+        val queryPacket = DatagramPacket(data, data.size, upstreamAddr, 53)
+
+        val socket = persistentSocket
+        if (socket != null) {
+            return try {
+                synchronized(socket) {
+                    socket.soTimeout = 2000
+                    socket.send(queryPacket)
+
+                    val responseBuffer = ByteArray(1024)
+                    val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
+                    socket.receive(responsePacket)
+
+                    responsePacket.data.copyOf(responsePacket.length)
+                }
+            } catch (e: IOException) {
+                Log.e(TAG, "Failed to forward DNS packet via persistent socket", e)
+                null
             }
-        } catch (e: Exception) {
+        }
+
+        // Fallback to one-shot socket
+        Log.w(TAG, "persistentSocket is null; falling back to one-shot DNS socket")
+        var oneShotSocket: DatagramSocket? = null
+        return try {
+            oneShotSocket = DatagramSocket().apply {
+                protect(this)
+                soTimeout = 2000
+            }
+            oneShotSocket.send(queryPacket)
+            val responseBuffer = ByteArray(1024)
+            val responsePacket = DatagramPacket(responseBuffer, responseBuffer.size)
+            oneShotSocket.receive(responsePacket)
+            responsePacket.data.copyOf(responsePacket.length)
+        } catch (e: IOException) {
+            Log.e(TAG, "Failed to forward DNS packet via one-shot socket", e)
             null
+        } finally {
+            oneShotSocket?.close()
         }
     }
 
@@ -349,13 +371,7 @@ class DnsVpnService : VpnService() {
             while (pos < startPos + dnsDataSize) {
                 val lenByte = packet.get(pos).toInt() and 0xFF
                 if (lenByte == 0) break
-
-                // Check for DNS Compression (0xC0)
-                if ((lenByte and 0xC0) == 0xC0) {
-                    // We don't fully support pointer jumping for simplicity,
-                    // but most queries from local device won't use it in the Question section.
-                    break
-                }
+                if ((lenByte and 0xC0) == 0xC0) break
 
                 if (sb.isNotEmpty()) sb.append(".")
                 for (i in 0 until lenByte) {

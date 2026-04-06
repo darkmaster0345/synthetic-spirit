@@ -11,6 +11,7 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
@@ -27,6 +28,16 @@ import com.example.syntheticspirit.ui.theme.SyntheticSpiritTheme
 import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
+
+    private val vpnPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            onVpnPermissionGranted()
+        } else {
+            Toast.makeText(this, "VPN permission denied", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,7 +56,6 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     fun MainScreen() {
-        // These rely on the Companion Object in DnsVpnService.kt
         val isRunning by DnsVpnService.isRunning 
         val serviceStartTime by DnsVpnService.serviceStartTime
         
@@ -212,30 +222,23 @@ class MainActivity : ComponentActivity() {
     private fun startVpnService() {
         val vpnIntent = VpnService.prepare(this)
         if (vpnIntent != null) {
-            startActivityForResult(vpnIntent, 0)
+            vpnPermissionLauncher.launch(vpnIntent)
         } else {
-            onActivityResult(0, Activity.RESULT_OK, null)
+            onVpnPermissionGranted()
         }
+    }
+
+    private fun onVpnPermissionGranted() {
+        val intent = Intent(this, DnsVpnService::class.java)
+        startForegroundService(intent)
+        Toast.makeText(this, "Synthetic Spirit Shield Activated", Toast.LENGTH_SHORT).show()
     }
 
     private fun stopVpnService() {
         val intent = Intent(this, DnsVpnService::class.java).apply {
             action = "STOP"
         }
-        // Always use startForegroundService to communicate with an active service
         startForegroundService(intent)
         Toast.makeText(this, "Shield Deactivated", Toast.LENGTH_SHORT).show()
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 0 && resultCode == Activity.RESULT_OK) {
-            val intent = Intent(this, DnsVpnService::class.java)
-            // Use startForegroundService for Android 15 compliance
-            startForegroundService(intent)
-            Toast.makeText(this, "Synthetic Spirit Shield Activated", Toast.LENGTH_SHORT).show()
-        } else if (requestCode == 0) {
-            Toast.makeText(this, "VPN permission denied", Toast.LENGTH_SHORT).show()
-        }
     }
 }

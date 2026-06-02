@@ -46,6 +46,7 @@ class MainActivity : ComponentActivity() {
         val prefs = getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE)
         if (!prefs.getBoolean("initial_import_done", false)) {
             BlocklistManager(this).triggerImport()
+            prefs.edit().putBoolean("initial_import_done", true).apply()
         }
 
         setContent {
@@ -238,6 +239,15 @@ class MainActivity : ComponentActivity() {
         getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE).edit().putBoolean("was_running", true).apply()
         val intent = Intent(this, DnsVpnService::class.java)
         startForegroundService(intent)
+
+        // Schedule watchdog
+        val workRequest = androidx.work.PeriodicWorkRequestBuilder<ResilienceWorker>(15, java.util.concurrent.TimeUnit.MINUTES).build()
+        androidx.work.WorkManager.getInstance(this).enqueueUniquePeriodicWork(
+            "vpn_watchdog",
+            androidx.work.ExistingPeriodicWorkPolicy.REPLACE,
+            workRequest
+        )
+
         Toast.makeText(this, "Synthetic Spirit Shield Activated", Toast.LENGTH_SHORT).show()
     }
 
@@ -247,6 +257,10 @@ class MainActivity : ComponentActivity() {
             action = "STOP"
         }
         startForegroundService(intent)
+
+        // Cancel watchdog
+        androidx.work.WorkManager.getInstance(this).cancelUniqueWork("vpn_watchdog")
+
         Toast.makeText(this, "Shield Deactivated", Toast.LENGTH_SHORT).show()
     }
 }

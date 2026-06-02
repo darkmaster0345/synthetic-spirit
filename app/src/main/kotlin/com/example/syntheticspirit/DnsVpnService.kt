@@ -310,11 +310,8 @@ class DnsVpnService : VpnService() {
 
             // 3. Bloom Filter & DB Check
             val isDomainBlocked = withContext(Dispatchers.IO) {
-                if (bloomFilter?.mightContain(domainStr) == true) {
-                    db.blockedDomainDao().isBlocked(domainStr)
-                } else {
-                    false
-                }
+                // Consult DB directly to ensure newly imported domains are detected
+                db.blockedDomainDao().isBlocked(domainStr)
             }
 
             lookupCache.put(domainStr, isDomainBlocked)
@@ -345,7 +342,14 @@ class DnsVpnService : VpnService() {
         serviceScope.launch(Dispatchers.IO) { db.dnsLogDao().insert(logItem) }
 
         val response = createNxDomainResponse(dnsData, clientIp, clientPort, serverIp, serverPort)
-        synchronized(output) { try { output.write(response) } catch (e: Exception) {} }
+        synchronized(output) {
+            try {
+                output.write(response)
+            } catch (e: Exception) {
+                Log.e("DnsVpnService", "Failed to write block response", e)
+                stopVpn()
+            }
+        }
     }
 
     private fun forwardAndLog(
@@ -369,7 +373,12 @@ class DnsVpnService : VpnService() {
                 if (dnsResponse != null) {
                     val finalPacket = wrapUdpIp(dnsResponse, clientIp, clientPort, serverIp, serverPort)
                     synchronized(output) {
-                        try { output.write(finalPacket) } catch (e: Exception) {}
+                        try {
+                            output.write(finalPacket)
+                        } catch (e: Exception) {
+                            Log.e("DnsVpnService", "Failed to write forward response", e)
+                            stopVpn()
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -477,7 +486,11 @@ class DnsVpnService : VpnService() {
         buffer.putShort(srcPort.toShort())
         buffer.putShort(dstPort.toShort())
         buffer.putShort(udpLen.toShort())
-        buffer.putShort(0.toShort()) // UDP Checksum (optional/0)
+        if (isIpv6) {
+            buffer.putShort(calculateIPv6UdpChecksum(out, dnsData))
+        } else {
+            buffer.putShort(0.toShort()) // UDP Checksum (optional/0 for IPv4)
+        }
         
         buffer.put(dnsData)
         return out
@@ -529,5 +542,36 @@ class DnsVpnService : VpnService() {
         dnsExecutor.shutdownNow()
         persistentSocket?.close()
         super.onDestroy()
+    }
+
+    private fun calculateIPv6UdpChecksum(packet: ByteArray, dnsData: ByteArray): Short {
+        var sum = 0L
+        // IPv6 Pseudo-header
+        for (i in 8 until 40 step 2) { // Src & Dst IPs
+            sum += (packet[i].toInt() and 0xFF shl 8) or (packet[i + 1].toInt() and 0xFF)
+        }
+        val udpLen = dnsData.size + 8
+        sum += udpLen
+        sum += 17 // Next Header (UDP)
+
+        // UDP Header (except checksum)
+        sum += (packet[40].toInt() and 0xFF shl 8) or (packet[41].toInt() and 0xFF) // Src Port
+        sum += (packet[42].toInt() and 0xFF shl 8) or (packet[43].toInt() and 0xFF) // Dst Port
+        sum += udpLen // Length
+
+        // UDP Payload
+        for (i in 0 until dnsData.size step 2) {
+            val high = dnsData[i].toInt() and 0xFF shl 8
+            val low = if (i + 1 < dnsData.size) dnsData[i + 1].toInt() and 0xFF else 0
+            sum += (high or low)
+        }
+
+        while (sum shr 16 != 0L) {
+            sum = (sum and 0xFFFF) + (sum shr 16)
+        }
+
+        var checksum = (sum.inv() and 0xFFFF).toShort()
+        if (checksum.toInt() == 0) checksum = 0xFFFF.toShort()
+        return checksum
     }
 }

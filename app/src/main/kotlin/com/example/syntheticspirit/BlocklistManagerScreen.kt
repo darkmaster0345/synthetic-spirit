@@ -74,7 +74,7 @@ fun BlocklistManagerScreen(viewModel: BlocklistManagerViewModel = viewModel()) {
                     Switch(
                         checked = !item.isWhitelisted,
                         onCheckedChange = { 
-                            viewModel.onWhitelistClicked(item.domain, item.isWhitelisted)
+                            viewModel.onWhitelistClicked(item.domain, !item.isWhitelisted)
                         },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor = Color(0xFF10B981),

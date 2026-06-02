@@ -10,10 +10,12 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@69cfbfb482c04fb3f583191300d65601972c2533 # v4.1.7
+      with:
+        persist-credentials: false
 
     - name: set up JDK 17
-      uses: actions/setup-java@v3
+      uses: actions/setup-java@387ac27123f328f0853c30d4774a728e897d930a # v4.2.1
       with:
         java-version: '17'
         distribution: 'temurin'
@@ -29,7 +31,7 @@ jobs:
       run: ./gradlew assembleDebug
 
     - name: Upload APK
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@0b2256b8c012f0828bd5c120a89476100780521f # v4.3.4
       with:
         name: app-debug
         path: app/build/outputs/apk/debug/app-debug.apk

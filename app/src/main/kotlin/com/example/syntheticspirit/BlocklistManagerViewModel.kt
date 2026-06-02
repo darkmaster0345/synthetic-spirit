@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 
+data class BlocklistItem(val domain: String, val isWhitelisted: Boolean)
+
 @OptIn(FlowPreview::class, kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class BlocklistManagerViewModel(application: Application) : AndroidViewModel(application) {
 

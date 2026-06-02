@@ -1,9 +1,11 @@
 package com.example.syntheticspirit
 
 import android.content.Intent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -13,6 +15,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -57,32 +60,37 @@ fun QueryLogScreen(onBack: () -> Unit, viewModel: QueryLogViewModel = viewModel(
         }
     }
 
-    Column {
+    Column(modifier = Modifier.fillMaxSize().background(Color(0xFF0F172A))) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().padding(8.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack) {
-                Icon(Icons.Filled.ArrowBack, contentDescription = "Back")
+                Icon(Icons.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
+            Text(
+                text = "Query Log",
+                style = MaterialTheme.typography.titleLarge,
+                color = Color.White
+            )
             Row {
                 IconButton(
                     onClick = { shareLogs() },
                     enabled = logs.isNotEmpty()
                 ) {
-                    Icon(Icons.Filled.Share, contentDescription = "Share Logs")
+                    Icon(Icons.Filled.Share, contentDescription = "Share Logs", tint = if (logs.isNotEmpty()) Color.White else Color.Gray)
                 }
                 TextButton(
                     onClick = { viewModel.clearLogs() },
                     enabled = logs.isNotEmpty()
                 ) {
-                    Text("Clear")
+                    Text("Clear", color = if (logs.isNotEmpty()) Color.White else Color.Gray)
                 }
             }
         }
 
-        LazyColumn {
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
             items(logs) { log ->
                 val sdf = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
                 val time = sdf.format(Date(log.timestamp))
@@ -90,15 +98,17 @@ fun QueryLogScreen(onBack: () -> Unit, viewModel: QueryLogViewModel = viewModel(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(8.dp)
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(text = log.domain)
-                        Text(text = time, color = Color.Gray)
+                        Text(text = log.domain, color = Color.White, style = MaterialTheme.typography.bodyLarge)
+                        Text(text = time, color = Color.Gray, style = MaterialTheme.typography.labelMedium)
                     }
                     Text(
                         text = if (log.isBlocked) "Blocked" else "Allowed",
-                        color = if (log.isBlocked) Color.Red else Color.Green
+                        color = if (log.isBlocked) Color(0xFFEF4444) else Color(0xFF10B981),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.align(Alignment.CenterVertically)
                     )
                 }
             }

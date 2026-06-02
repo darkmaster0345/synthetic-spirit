@@ -29,6 +29,7 @@ import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.Inet6Address
 import java.net.InetAddress
 import java.nio.ByteBuffer
 import java.nio.charset.Charset
@@ -52,6 +53,7 @@ class DnsVpnService : VpnService() {
     
     private val lookupCache = LruCache<String, Boolean>(2000)
     private var bloomFilter: BloomFilter<CharSequence>? = null
+    private lateinit var whitelistManager: WhitelistManager
     
     private lateinit var db: AppDatabase
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -66,6 +68,7 @@ class DnsVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         db = AppDatabase.getDatabase(this)
+        whitelistManager = WhitelistManager(this)
         createNotificationChannel()
         loadBloomFilter()
         
@@ -225,27 +228,29 @@ class DnsVpnService : VpnService() {
         val firstByte = packet.get().toInt() and 0xFF
         val version = (firstByte shr 4) and 0x0F
 
-        val ihl: Int
         val protocol: Int
-        val srcIpInt: Int
-        val dstIpInt: Int
+        val ihl: Int
+        val srcIp: ByteArray
+        val dstIp: ByteArray
 
         if (version == 4) {
             ihl = (firstByte and 0x0F) * 4
             packet.position(posBefore + 9)
             protocol = packet.get().toInt() and 0xFF
             packet.position(posBefore + 12)
-            srcIpInt = packet.int
-            dstIpInt = packet.int
+            srcIp = ByteArray(4)
+            dstIp = ByteArray(4)
+            packet.get(srcIp)
+            packet.get(dstIp)
         } else if (version == 6) {
-            // Very basic IPv6 handling
             if (packet.remaining() < 40) return
             packet.position(posBefore + 6)
             protocol = packet.get().toInt() and 0xFF
             packet.position(posBefore + 8)
-            // We just use a hash for the IP for now or ignore if not needed for DNS response
-            srcIpInt = 0
-            dstIpInt = 0
+            srcIp = ByteArray(16)
+            dstIp = ByteArray(16)
+            packet.get(srcIp)
+            packet.get(dstIp)
             ihl = 40
         } else {
             return
@@ -271,53 +276,104 @@ class DnsVpnService : VpnService() {
         packet.position(dnsStartPos)
         packet.get(originalDnsData)
 
-        processDnsQuery(originalDnsData, domain, srcIpInt, srcPort, dstIpInt, dstPort, output)
+        processDnsQuery(originalDnsData, domain, srcIp, srcPort, dstIp, dstPort, output)
     }
 
     private fun processDnsQuery(
         dnsData: ByteArray, 
         domain: CharSequence,
-        clientIpInt: Int, 
+        clientIp: ByteArray,
         clientPort: Int, 
-        serverIpInt: Int, 
+        serverIp: ByteArray,
         serverPort: Int,
         output: FileOutputStream
     ) {
         serviceScope.launch {
-            val isDomainBlocked = withContext(Dispatchers.IO) {
-                db.blockedDomainDao().isBlocked(domain.toString()) ||
-                (bloomFilter?.mightContain(domain.toString()) ?: false)
+            val domainStr = domain.toString()
+
+            // 1. Whitelist Check (Fastest)
+            if (whitelistManager.isWhitelisted(domainStr)) {
+                forwardAndLog(dnsData, domainStr, false, clientIp, clientPort, serverIp, serverPort, output)
+                return@launch
             }
 
-            val logItem = DnsLog(
-                domain = domain.toString(),
-                isBlocked = isDomainBlocked,
-                timestamp = System.currentTimeMillis()
-            )
-            db.dnsLogDao().insert(logItem)
+            // 2. LRU Cache Check (Fast)
+            val cachedResult = lookupCache.get(domainStr)
+            if (cachedResult != null) {
+                if (cachedResult) {
+                    blockAndLog(dnsData, domainStr, clientIp, clientPort, serverIp, serverPort, output)
+                } else {
+                    forwardAndLog(dnsData, domainStr, false, clientIp, clientPort, serverIp, serverPort, output)
+                }
+                return@launch
+            }
+
+            // 3. Bloom Filter & DB Check
+            val isDomainBlocked = withContext(Dispatchers.IO) {
+                if (bloomFilter?.mightContain(domainStr) == true) {
+                    db.blockedDomainDao().isBlocked(domainStr)
+                } else {
+                    false
+                }
+            }
+
+            lookupCache.put(domainStr, isDomainBlocked)
 
             if (isDomainBlocked) {
-                Log.i("DnsVpnService", "Blocked: $domain")
-                _blockedCount.value++
-                getSharedPreferences("vpn_prefs", MODE_PRIVATE).edit()
-                    .putInt("threats_blocked", _blockedCount.value).apply()
-
-                val response = createNxDomainResponse(dnsData, clientIpInt, clientPort, serverIpInt, serverPort)
-                synchronized(output) { try { output.write(response) } catch (e: Exception) {} }
+                blockAndLog(dnsData, domainStr, clientIp, clientPort, serverIp, serverPort, output)
             } else {
-                dnsExecutor.execute {
-                    try {
-                        val dnsResponse = forwardDnsPacket(dnsData)
-                        if (dnsResponse != null) {
-                            val finalPacket = wrapUdpIp(dnsResponse, clientIpInt, clientPort, serverIpInt, serverPort)
-                            synchronized(output) {
-                                try { output.write(finalPacket) } catch (e: Exception) {}
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.e("DnsVpnService", "Upstream error for $domain", e)
+                forwardAndLog(dnsData, domainStr, true, clientIp, clientPort, serverIp, serverPort, output)
+            }
+        }
+    }
+
+    private fun blockAndLog(
+        dnsData: ByteArray,
+        domain: String,
+        clientIp: ByteArray,
+        clientPort: Int,
+        serverIp: ByteArray,
+        serverPort: Int,
+        output: FileOutputStream
+    ) {
+        Log.i("DnsVpnService", "Blocked: $domain")
+        _blockedCount.value++
+        getSharedPreferences("vpn_prefs", MODE_PRIVATE).edit()
+            .putInt("threats_blocked", _blockedCount.value).apply()
+
+        val logItem = DnsLog(domain = domain, isBlocked = true, timestamp = System.currentTimeMillis())
+        serviceScope.launch(Dispatchers.IO) { db.dnsLogDao().insert(logItem) }
+
+        val response = createNxDomainResponse(dnsData, clientIp, clientPort, serverIp, serverPort)
+        synchronized(output) { try { output.write(response) } catch (e: Exception) {} }
+    }
+
+    private fun forwardAndLog(
+        dnsData: ByteArray,
+        domain: String,
+        shouldLog: Boolean,
+        clientIp: ByteArray,
+        clientPort: Int,
+        serverIp: ByteArray,
+        serverPort: Int,
+        output: FileOutputStream
+    ) {
+        if (shouldLog) {
+            val logItem = DnsLog(domain = domain, isBlocked = false, timestamp = System.currentTimeMillis())
+            serviceScope.launch(Dispatchers.IO) { db.dnsLogDao().insert(logItem) }
+        }
+
+        dnsExecutor.execute {
+            try {
+                val dnsResponse = forwardDnsPacket(dnsData)
+                if (dnsResponse != null) {
+                    val finalPacket = wrapUdpIp(dnsResponse, clientIp, clientPort, serverIp, serverPort)
+                    synchronized(output) {
+                        try { output.write(finalPacket) } catch (e: Exception) {}
                     }
                 }
+            } catch (e: Exception) {
+                Log.e("DnsVpnService", "Upstream error for $domain", e)
             }
         }
     }
@@ -350,12 +406,7 @@ class DnsVpnService : VpnService() {
                 val lenByte = packet.get(pos).toInt() and 0xFF
                 if (lenByte == 0) break
 
-                // Check for DNS Compression (0xC0)
-                if ((lenByte and 0xC0) == 0xC0) {
-                    // We don't fully support pointer jumping for simplicity,
-                    // but most queries from local device won't use it in the Question section.
-                    break
-                }
+                if ((lenByte and 0xC0) == 0xC0) break
 
                 if (sb.isNotEmpty()) sb.append(".")
                 for (i in 0 until lenByte) {
@@ -370,47 +421,63 @@ class DnsVpnService : VpnService() {
 
     private fun createNxDomainResponse(
         queryDnsData: ByteArray,
-        clientIpInt: Int,
+        clientIp: ByteArray,
         clientPort: Int,
-        serverIpInt: Int,
+        serverIp: ByteArray,
         serverPort: Int
     ): ByteArray {
         val responseDns = queryDnsData.copyOf()
         if (responseDns.size < 12) return ByteArray(0)
         responseDns[2] = (responseDns[2].toInt() or 0x80).toByte() 
         responseDns[3] = (responseDns[3].toInt() and 0xF0 or 0x83).toByte() 
-        return wrapUdpIp(responseDns, clientIpInt, clientPort, serverIpInt, serverPort)
+        return wrapUdpIp(responseDns, clientIp, clientPort, serverIp, serverPort)
     }
 
     private fun wrapUdpIp(
         dnsData: ByteArray,
-        dstIpInt: Int,
+        dstIp: ByteArray,
         dstPort: Int,
-        srcIpInt: Int,
+        srcIp: ByteArray,
         srcPort: Int
     ): ByteArray {
+        val isIpv6 = dstIp.size == 16
+        val ipHeaderLen = if (isIpv6) 40 else 20
         val udpLen = dnsData.size + 8
-        val ipLen = udpLen + 20
-        val out = ByteArray(ipLen)
+        val totalLen = ipHeaderLen + udpLen
+        
+        val out = ByteArray(totalLen)
         val buffer = ByteBuffer.wrap(out)
         
-        buffer.put(0x45.toByte()) 
-        buffer.put(0x00.toByte()) 
-        buffer.putShort(ipLen.toShort())
-        buffer.putShort(0.toShort()) 
-        buffer.putShort(0x4000.toShort()) 
-        buffer.put(64.toByte()) 
-        buffer.put(17.toByte()) 
-        buffer.putShort(0.toShort())
-        buffer.putInt(srcIpInt)
-        buffer.putInt(dstIpInt)
+        if (!isIpv6) {
+            buffer.put(0x45.toByte())
+            buffer.put(0x00.toByte())
+            buffer.putShort(totalLen.toShort())
+            buffer.putShort(0.toShort())
+            buffer.putShort(0x4000.toShort())
+            buffer.put(64.toByte())
+            buffer.put(17.toByte())
+            buffer.putShort(0.toShort()) // Checksum placeholder
+            buffer.put(srcIp)
+            buffer.put(dstIp)
+            buffer.putShort(10, calculateChecksum(out, 0, 20))
+        } else {
+            // IPv6 Header
+            buffer.put(0x60.toByte())
+            buffer.put(0.toByte())
+            buffer.put(0.toByte())
+            buffer.put(0.toByte())
+            buffer.putShort(udpLen.toShort()) // Payload length
+            buffer.put(17.toByte()) // Next header (UDP)
+            buffer.put(64.toByte()) // Hop limit
+            buffer.put(srcIp)
+            buffer.put(dstIp)
+        }
         
-        buffer.putShort(10, calculateChecksum(out, 0, 20))
-        
+        // UDP Header
         buffer.putShort(srcPort.toShort())
         buffer.putShort(dstPort.toShort())
         buffer.putShort(udpLen.toShort())
-        buffer.putShort(0.toShort()) 
+        buffer.putShort(0.toShort()) // UDP Checksum (optional/0)
         
         buffer.put(dnsData)
         return out

@@ -42,6 +42,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Ensure blocklist is imported on first launch
+        val prefs = getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE)
+        if (!prefs.getBoolean("initial_import_done", false)) {
+            BlocklistManager(this).triggerImport()
+        }
+
         setContent {
             SyntheticSpiritTheme(darkTheme = true) {
                 Surface(
@@ -83,11 +89,11 @@ class MainActivity : ComponentActivity() {
 
         when {
             showLogs -> QueryLogScreen(onBack = { showLogs = false })
+            showBlocklistUrls -> BlocklistUrlScreen(onBack = { showBlocklistUrls = false })
             showBlocklistSettings -> BlocklistSettingsScreen(
                 onBack = { showBlocklistSettings = false },
                 onManageUrls = { showBlocklistUrls = true }
             )
-            showBlocklistUrls -> BlocklistUrlScreen()
             else -> {
                 Column(
                     modifier = Modifier
@@ -229,12 +235,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onVpnPermissionGranted() {
+        getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE).edit().putBoolean("was_running", true).apply()
         val intent = Intent(this, DnsVpnService::class.java)
         startForegroundService(intent)
         Toast.makeText(this, "Synthetic Spirit Shield Activated", Toast.LENGTH_SHORT).show()
     }
 
     private fun stopVpnService() {
+        getSharedPreferences("vpn_prefs", Context.MODE_PRIVATE).edit().putBoolean("was_running", false).apply()
         val intent = Intent(this, DnsVpnService::class.java).apply {
             action = "STOP"
         }

@@ -26,11 +26,11 @@ class BlocklistImportWorker(
             val currentHash = calculateAssetHash(assetFileName)
             val lastImportedHash = prefs.getString("last_imported_hash", "")
 
-            // Only import if hash changed or never imported
+// Only import if hash changed or never imported
             if (currentHash != lastImportedHash) {
                 Log.d("BlocklistWorker", "Importing new blocklist version. Hash: $currentHash")
-                
-val domains = applicationContext.assets.open(assetFileName).bufferedReader().useLines { lines ->
+
+                val domains = applicationContext.assets.open(assetFileName).bufferedReader().useLines { lines ->
                     lines.filter { it.isNotBlank() && !it.startsWith("#") }
                          .map { line ->
                              val cleanDomain = line.trim().lowercase()

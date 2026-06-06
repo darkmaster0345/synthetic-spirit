@@ -107,9 +107,10 @@ class DnsVpnService : VpnService() {
 
                 assets.open("blocked_domains.txt").use { inputStream ->
                     BufferedReader(InputStreamReader(inputStream)).forEachLine { line ->
-                        val domain = line.trim().lowercase()
-                        if (domain.isNotEmpty() && !domain.startsWith("#")) {
-                            filter.put(domain)
+                        val cleanDomain = line.trim().lowercase()
+                            .removePrefix("0.0.0.0.").removePrefix("0.0.0.0").removePrefix("0.")
+                        if (cleanDomain.isNotEmpty() && !cleanDomain.startsWith("#")) {
+                            filter.put(cleanDomain)
                         }
                     }
                 }

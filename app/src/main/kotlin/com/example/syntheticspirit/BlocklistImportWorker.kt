@@ -30,17 +30,18 @@ class BlocklistImportWorker(
             if (currentHash != lastImportedHash) {
                 Log.d("BlocklistWorker", "Importing new blocklist version. Hash: $currentHash")
                 
-                val domains = applicationContext.assets.open(assetFileName).bufferedReader().useLines { lines ->
+val domains = applicationContext.assets.open(assetFileName).bufferedReader().useLines { lines ->
                     lines.filter { it.isNotBlank() && !it.startsWith("#") }
-                         .map { it.trim().lowercase() }
-                         .map { domain ->
-                            val category = when {
-                                domain.contains("porn") || domain.contains("adult") || domain.contains("sex") || domain.contains("xxx") -> "Adult"
-                                domain.contains("bet") || domain.contains("casino") || domain.contains("gamble") || domain.contains("lottery") || domain.contains("poker") -> "Gambling"
-                                domain.contains("facebook") || domain.contains("instagram") || domain.contains("twitter") || domain.contains("tiktok") || domain.contains("reddit") || domain.contains("social") -> "Social Media"
-                                else -> "General"
-                            }
-                            BlockedDomain(domain = domain, category = category)
+                         .map { line ->
+                             val cleanDomain = line.trim().lowercase()
+                                 .removePrefix("0.0.0.0.").removePrefix("0.0.0.0").removePrefix("0.")
+                             val category = when {
+                                 cleanDomain.contains("porn") || cleanDomain.contains("adult") || cleanDomain.contains("sex") || cleanDomain.contains("xxx") -> "Adult"
+                                 cleanDomain.contains("bet") || cleanDomain.contains("casino") || cleanDomain.contains("gamble") || cleanDomain.contains("lottery") || cleanDomain.contains("poker") -> "Gambling"
+                                 cleanDomain.contains("facebook") || cleanDomain.contains("instagram") || cleanDomain.contains("twitter") || cleanDomain.contains("tiktok") || cleanDomain.contains("reddit") || cleanDomain.contains("social") -> "Social Media"
+                                 else -> "General"
+                             }
+                             BlockedDomain(domain = cleanDomain, category = category)
                          }
                          .toList()
                 }
